@@ -1,4 +1,5 @@
 import numpy as np
+import numpy as np
 from math import factorial
 from support import bigGram, wsGram
 from optimization_algorithms import SSANOVAwt_Gaussian,twostep_Gaussian, \
@@ -21,7 +22,7 @@ class acosso:
         self.y = y.copy()
         
         if (nbasis is None) and (basis_idx is None):
-            self.nbasis = np.max([40,int(np.ceil(12*self.n**(2/9)))])
+            self.nbasis = X.shape[0]
             self.basis_idx = np.sort(sample(range(self.n),self.nbasis))
         elif (nbasis is not None) and (basis_idx is None):
             self.nbasis = nbasis     
@@ -41,23 +42,6 @@ class acosso:
         self.order = order
         
 
-        
-        
-        #self.wt = self.SSANOVAwt(gamma = self.gamma)
-        
-        # something went wrong here
-        #self.obj = cosso_Gaussian(self.Kmat,self.y,self.wt,self.basis_idx)
-
-        
-        
-        
-        
-        
-        # Check for categorical variables if not specified
-        #
-        #self.P = self.choose_P(order)
-
-        #self.K_theta = wsGram(self.Kmat, np.ones(self.P))
         if cat_pos is None:
             cat_pos = []
             
@@ -162,12 +146,16 @@ class acosso:
         None.
 
         '''
-        self.Kmat = bigGram(self.X, self.X, order = self.order, 
+        
+        self.Kmat = bigGram(self.X, self.X, order = self.order,
                             cat_pos = self.cat_pos)
         
         self.P = self.Kmat.shape[2]
+        
         self.Gramat1 = self.Kmat[:,self.basis_idx, :]
+        
         self.Gramat2 = self.Gramat1[self.basis_idx,:,:]
+        
         self.wt = self.SSANOVAwt(mscale = self.m_scale0, gamma = self.gamma)
         
         
@@ -192,9 +180,8 @@ class acosso:
         '''
         if mscale is None:
             mscale = np.ones(self.P)
-        inv_l2norm = SSANOVAwt_Gaussian(self.X,self.y,mscale,
-                                        basis_idx = self.basis_idx,
-                                        order=self.order,
+        inv_l2norm = SSANOVAwt_Gaussian(self.Gramat1,self.Gramat2,
+                                        self.y,mscale,order=self.order,
                                         cat_pos = self.cat_pos)
         return inv_l2norm**gamma
     
@@ -231,6 +218,16 @@ class acosso:
         self.obj['M'] = obj_tuning['M']
         self.obj['Mcvm'] = obj_tuning['cvm']
         self.obj['Mcvsd'] = obj_tuning['cvsd']
+        fit_func = twostep_Gaussian(self.Gramat1,
+                            self.Gramat2,
+                            self.y,
+                            self.wt,
+                            self.obj['tune']['opt_lam'],
+                            self.obj['OptM']
+                            )
+        self.obj['coefs']=fit_func['coefs']
+        self.obj['intercept'] = fit_func['intercept']
+        self.obj['theta'] = fit_func['theta']
     
     def predict(self, x_new, eps = 1e-7):
         d = x_new.shape[1]

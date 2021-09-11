@@ -39,7 +39,6 @@ def sspline(Gram1, Gram2, y, mscale, lambda_0):
     return {'b_hat':bhat,
             'c_hat':chat}
 
-
 def cvlam_Gaussian(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
     '''
     Performs cross-validation to find an optimum value for lambda
@@ -83,6 +82,7 @@ def cvlam_Gaussian(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
         test_R_t1 = R_theta1[test_index,:]
         LHS = np.matmul(train_R_t1.T, train_R_t1)
         RHS = np.matmul(train_R_t1.T, (y[train_index] - np.mean(y[train_index])))
+        Cs = np.zeros((n,len(lambda_cand)))
         for k in range(len(lambda_cand)):
             LHS_2 = LHS + 2*len(train_index)*lambda_cand[k]*R_theta2
             chat = solve_singular(LHS_2, RHS)
@@ -93,7 +93,75 @@ def cvlam_Gaussian(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
     optLambd = np.where(cvm == np.min(cvm))
     return lambda_cand[optLambd]
 
-def SSANOVAwt_Gaussian(x,y,mscale,basis_idx, order,cat_pos):
+
+def cvlam_Gaussian_eff(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
+    '''
+    The hope was to somehow vectorize the solver. 
+    The rest of the function  works fine, but I need to figure out how to do that.
+    Until then, this function is slower than the original
+
+    Parameters
+    ----------
+    Gram1 : 3D array
+        First reproducing kernel.
+    Gram2 : 3D array
+        Second reproducing kernel.
+    y : 1D array
+        output Y.
+    mscale : 1D array or list
+        The weights assigned to the functional components.
+    n_folds : int
+        The number of folds the cross-validation should be performed over.
+    lambda_cand : 1D array or list, optional
+        Candidate lambdas. The default is 2**(np.arange(-10,-22,-0.75)). This is
+        not a very good range, needs to change
+
+    Returns
+    -------
+    float
+        The best lambda from cross_validation.
+
+    '''
+    if lambda_cand is None:
+        lambda_cand = 2**(np.arange(-10,-22,-0.75))
+    
+    n = len(y)
+
+    R_theta1 = wsGram(Gram1, mscale)
+    R_theta2 = wsGram(Gram2, mscale)
+    # Repeating this lambda_cand times to do cross-val
+    R_theta_2_rep = np.repeat(R_theta2[:,:,np.newaxis],len(lambda_cand),axis=2)
+    
+    kfold = cv_split(n, nfolds = n_folds)
+    cv_raw = np.zeros((n,len(lambda_cand)))
+    
+    for train_index, test_index in kfold:
+        train_R_t1 = R_theta1[train_index,:]
+        test_R_t1 = R_theta1[test_index,:]
+        LHS = np.matmul(train_R_t1.T, train_R_t1)
+        RHS = np.matmul(train_R_t1.T, (y[train_index] - np.mean(y[train_index])))
+        
+        LHS_rep = np.repeat(LHS[:,:,np.newaxis],len(lambda_cand),axis=2)
+        LHS_2_rep = R_theta_2_rep * lambda_cand * len(train_index)*2 + LHS_rep
+        LHS_2_rep = LHS_2_rep.transpose((2,0,1))
+        c_hat = np.array([])
+        for slice in LHS_2_rep:
+            L = np.linalg.cholesky(slice)
+            c = np.linalg.solve(L.T,np.linalg.solve(L,RHS)).reshape(-1,)
+            c_hat = np.append(c_hat,c)
+            
+        c_hat = c_hat.reshape(n,LHS_2_rep.shape[0],order='F')
+        b_hat = np.mean(y[train_index] - np.matmul(train_R_t1,c_hat),axis=0)
+        fpred = np.matmul(test_R_t1,c_hat) + b_hat
+        cv_raw[test_index,:] = (fpred - y[test_index])**2
+
+    cvm = np.mean(cv_raw, axis=0)
+    optLambd = np.where(cvm == np.min(cvm))
+    return lambda_cand[optLambd]
+
+
+ 
+def SSANOVAwt_Gaussian(Gram1,Gram2,y,mscale, order,cat_pos):
     '''
     Generates the initial adaptive weights w using SS_ANOVA
 
@@ -117,27 +185,32 @@ def SSANOVAwt_Gaussian(x,y,mscale,basis_idx, order,cat_pos):
     '''
     #n = len(x)
     d = len(mscale)
-    Gram1 = bigGram(x,x[basis_idx,:],order,cat_pos)
-    Gram2 = Gram1[basis_idx,:,:]
     lam = cvlam_Gaussian(Gram1,Gram2,y,mscale,8)
     cc = sspline(Gram1, Gram2, y, mscale, lam)
     c_hat = cc['c_hat']
     L2 = np.zeros(d)
-    for j in range(d):
-        fjj = np.matmul(mscale[j]*Gram1[:,:,j],c_hat)
-        if len(np.unique(fjj.round(9)))>6:
-            L2[j] = np.sqrt(np.mean(fjj**2))
-        else:
-            rng = np.max(fjj) - np.min(fjj)
-            L2[j] = rng
-    # We'll give it a small nugget:
-    # Small values are very powerful here
-    # We do not want this to explode too much
+    Gram1 = np.swapaxes(Gram1, 0, 2)
+    Gram1 = np.swapaxes(Gram1, 2, 1)
+    fjj = np.matmul(Gram1, c_hat).T
+    #print(fjj.shape)
+    #fjj = fjj[0,:,:]
+    fjj = fjj.round(9)
+    lengths = np.array([len(np.unique(fjj[:,j])) for j in range(d)])
+
+    idx1 = np.where(lengths > 6)[0]
+    idx2 = np.where(lengths <= 6)[0]
+    
+    L2[idx1] = np.sqrt(np.mean(fjj[:,idx1]**2,axis=0))
+    rng = np.max(fjj[:,idx2],axis=0) - np.min(fjj[:,idx2],axis=0)
+    L2[idx2] = rng
+
+            
     return 1/L2
 
-def twostep_Gaussian(Gram1, Gram2, y, wt, lam, mm):
+def twostep_Gaussian(Gram1, Gram2, y, wt, lam, mm, eps = 1e-3,maxit=20):
     '''
-    Solves the system that minimizes ||z-G*theta||
+    Solves the system that minimizes ||z-G*theta|| using the iterative algo in
+    the COSSO paper (more in README)
 
     Parameters
     ----------
@@ -165,21 +238,38 @@ def twostep_Gaussian(Gram1, Gram2, y, wt, lam, mm):
     nbasis = Gram1.shape[1]
     d = len(wt)
     wt = np.array(wt,dtype=float)
-    cb0 = sspline(Gram1, Gram2, y, 1/(wt**2), lam)
-    c0 = cb0['c_hat']
-    b0 = cb0['b_hat']
-    G1 = np.zeros((n,d))
-    G2 = np.zeros((nbasis,d))
-    for j in range(d):
-        G1[:,j] = (np.matmul(Gram1[:,:,j], c0)*(wt[j]**-2)).reshape(-1,)
-        G2[:,j] = (np.matmul(Gram2[:,:,j], c0)*(wt[j]**-2)).reshape(-1,)
-    dvec = (np.matmul(2*G1.T,y-b0)-np.matmul(n*lam*G2.T,c0)).reshape(-1,)
-    Dmat = 2*np.matmul(G1.T,G1)
-    Amat = (np.vstack([np.diag(np.ones(d)),np.array([-1]*d)])).T
-    bvec = np.hstack([np.zeros((d)),-mm])
-    obj = solve_qp(Dmat,dvec,Amat,bvec)
-    theta = obj[0]
-    theta[theta<1e-8] = 0
+    theta = np.ones(d)
+    # Solves iteratively
+    iteration = 0
+    while True:
+        if iteration > maxit:
+            break
+        iteration +=1
+        cb0 = sspline(Gram1, Gram2, y, theta/(wt**2), lam)
+        c0 = cb0['c_hat']
+        b0 = cb0['b_hat']
+        G1 = np.zeros((n,d))
+        G2 = np.zeros((nbasis,d))
+        for j in range(d):
+            G1[:,j] = (np.matmul(Gram1[:,:,j], c0)*(wt[j]**-2)).reshape(-1,)
+            G2[:,j] = (np.matmul(Gram2[:,:,j], c0)*(wt[j]**-2)).reshape(-1,)
+        dvec = (np.matmul(2*G1.T,y-b0)-np.matmul(n*lam*G2.T,c0)).reshape(-1,)
+        Dmat = 2*np.matmul(G1.T,G1)
+        Amat = (np.vstack([np.diag(np.ones(d)),np.array([-1]*d)])).T
+        bvec = np.hstack([np.zeros((d)),-mm])
+        obj = solve_qp(Dmat,dvec,Amat,bvec)
+        theta_new = obj[0]
+        # Stopping criterion
+        div = theta_new
+        div[theta_new<1e-6] = 1
+        rel_norm = np.sqrt(np.sum(((theta - theta_new)/div)**2))  
+        if rel_norm < eps:
+            theta = theta_new
+            break
+        theta = theta_new
+        
+        theta[theta<1e-8] = 0
+        
     cb1 = sspline(Gram1, Gram2, y, theta/(wt**2),lam)
     output = {'coefs':cb1['c_hat'],
               'intercept':cb1['b_hat'],
@@ -319,7 +409,7 @@ def tune_cosso_Gaussian(cosso_dict, n_folds):
         cvm = np.mean(cv_raw,axis=0)
         cvsd = np.sqrt(np.mean((cv_raw - cvm)**2, axis=0) / n)
         optM = cand_M[np.where(cvsd == np.min(cvsd))]
-    
+
     return {'OptM':optM,
             'M':cand_M,
             'cvm':cvm,

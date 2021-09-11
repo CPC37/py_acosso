@@ -1,11 +1,14 @@
 import numpy as np
 from math import factorial
 from sklearn.model_selection import KFold
+from scipy.spatial import distance_matrix
 
+
+    
 
 def genK(x1, x2):
     '''
-    Returns the reproducing kernel such that the solution belongs to the RKHS
+    Returns the reproducing kernel
 
     Parameters
     ----------
@@ -33,6 +36,10 @@ def genK(x1, x2):
     K = (np.matmul(k1s,k1t.T) + np.matmul(k2s, k2t.T) - ((b-0.5)**4 - (b-0.5)**2 / 2 + 7/240)/24)
 
     return K
+
+#def genK_cat(x1,x2):
+#    L = np.triu(np.ones(len(x1)))
+    
 
 def genK_cat(x1, x2):
     '''
@@ -103,6 +110,7 @@ def bigGram(x1, x2, order, cat_pos=0):
             Gram[:,:,j] = genK(x1[:,j],x2[:,j])
         else:
             Gram[:,:,j] = genK_cat(x1[:,j],x2[:,j])
+    
     
     if order == 2:
         combs = int(d*(d-1)/2)
