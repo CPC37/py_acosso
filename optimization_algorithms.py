@@ -39,62 +39,9 @@ def sspline(Gram1, Gram2, y, mscale, lambda_0):
     return {'b_hat':bhat,
             'c_hat':chat}
 
-def cvlam_Gaussian(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
-    '''
-    Performs cross-validation to find an optimum value for lambda
-    using spline interpolation
-
-    Parameters
-    ----------
-    Gram1 : 3D array
-        First reproducing kernel.
-    Gram2 : 3D array
-        Second reproducing kernel.
-    y : 1D array
-        output Y.
-    mscale : 1D array or list
-        The weights assigned to the functional components.
-    n_folds : int
-        The number of folds the cross-validation should be performed over.
-    lambda_cand : 1D array or list, optional
-        Candidate lambdas. The default is 2**(np.arange(-10,-22,-0.75)). This is
-        not a very good range, needs to change
-
-    Returns
-    -------
-    float
-        The best lambda from cross_validation.
-
-    '''
-    if lambda_cand is None:
-        lambda_cand = 2**(np.arange(-10,-22,-0.75))
-    
-    n = len(y)
-
-    R_theta1 = wsGram(Gram1, mscale)
-    R_theta2 = wsGram(Gram2, mscale)
-    
-    kfold = cv_split(n, nfolds = n_folds)
-    cv_raw = np.zeros((n,len(lambda_cand)))
-    
-    for train_index, test_index in kfold:
-        train_R_t1 = R_theta1[train_index,:]
-        test_R_t1 = R_theta1[test_index,:]
-        LHS = np.matmul(train_R_t1.T, train_R_t1)
-        RHS = np.matmul(train_R_t1.T, (y[train_index] - np.mean(y[train_index])))
-        Cs = np.zeros((n,len(lambda_cand)))
-        for k in range(len(lambda_cand)):
-            LHS_2 = LHS + 2*len(train_index)*lambda_cand[k]*R_theta2
-            chat = solve_singular(LHS_2, RHS)
-            bhat = np.mean(y[train_index] - np.matmul(train_R_t1,chat))
-            fpred = bhat + np.matmul(test_R_t1, chat)
-            cv_raw[test_index, k] = ((fpred - y[test_index])**2).reshape(-1,)
-    cvm = np.mean(cv_raw, axis=0)
-    optLambd = np.where(cvm == np.min(cvm))
-    return lambda_cand[optLambd]
 
 
-def cvlam_Gaussian_eff(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
+def cvlam_Gaussian(Gram1, Gram2, y, mscale, n_folds=6, max_evals= 100):
     '''
     The hope was to somehow vectorize the solver. 
     The rest of the function  works fine, but I need to figure out how to do that.
@@ -122,42 +69,64 @@ def cvlam_Gaussian_eff(Gram1, Gram2, y, mscale, n_folds, lambda_cand=None):
         The best lambda from cross_validation.
 
     '''
-    if lambda_cand is None:
-        lambda_cand = 2**(np.arange(-10,-22,-0.75))
+
+    # we start off with 40 points
+    log_lambda_min = -22
+    log_lambda_max = -5
+    lambda_cand = np.logspace(log_lambda_min, log_lambda_max, 40)
+    evals = 0
     
     n = len(y)
 
     R_theta1 = wsGram(Gram1, mscale)
     R_theta2 = wsGram(Gram2, mscale)
-    # Repeating this lambda_cand times to do cross-val
-    R_theta_2_rep = np.repeat(R_theta2[:,:,np.newaxis],len(lambda_cand),axis=2)
-    
-    kfold = cv_split(n, nfolds = n_folds)
-    cv_raw = np.zeros((n,len(lambda_cand)))
-    
-    for train_index, test_index in kfold:
-        train_R_t1 = R_theta1[train_index,:]
-        test_R_t1 = R_theta1[test_index,:]
-        LHS = np.matmul(train_R_t1.T, train_R_t1)
-        RHS = np.matmul(train_R_t1.T, (y[train_index] - np.mean(y[train_index])))
-        
-        LHS_rep = np.repeat(LHS[:,:,np.newaxis],len(lambda_cand),axis=2)
-        LHS_2_rep = R_theta_2_rep * lambda_cand * len(train_index)*2 + LHS_rep
-        LHS_2_rep = LHS_2_rep.transpose((2,0,1))
-        c_hat = np.array([])
-        for slice in LHS_2_rep:
-            L = np.linalg.cholesky(slice)
-            c = np.linalg.solve(L.T,np.linalg.solve(L,RHS)).reshape(-1,)
-            c_hat = np.append(c_hat,c)
-            
-        c_hat = c_hat.reshape(n,LHS_2_rep.shape[0],order='F')
-        b_hat = np.mean(y[train_index] - np.matmul(train_R_t1,c_hat),axis=0)
-        fpred = np.matmul(test_R_t1,c_hat) + b_hat
-        cv_raw[test_index,:] = (fpred - y[test_index])**2
 
-    cvm = np.mean(cv_raw, axis=0)
-    optLambd = np.where(cvm == np.min(cvm))
-    return lambda_cand[optLambd]
+    
+    while evals <= 100:
+        # add evals (40 to start, then 20, 20, 20....)
+        evals += len(lambda_cand)
+        kfold = cv_split(n, nfolds = n_folds)
+        cv_raw = np.zeros((n,len(lambda_cand)))
+        for train_index, test_index in kfold:
+            # Identify where the best current lambda is via cv
+            train_R_t1 = R_theta1[train_index,:]
+            test_R_t1 = R_theta1[test_index,:]
+            LHS = np.matmul(train_R_t1.T, train_R_t1)
+            RHS = np.matmul(train_R_t1.T, (y[train_index] - np.mean(y[train_index])))
+            for k in range(len(lambda_cand)):
+                LHS_2 = LHS + 2*len(train_index)*lambda_cand[k]*R_theta2
+                chat = solve_singular(LHS_2, RHS)
+                bhat = np.mean(y[train_index] - np.matmul(train_R_t1,chat))
+                fpred = bhat + np.matmul(test_R_t1, chat)
+                cv_raw[test_index, k] = ((fpred - y[test_index])**2).reshape(-1,)
+        cvm = np.mean(cv_raw, axis=0)
+        
+        # get the index of the best lam, sometimes it's an array, other times it's a value...weird
+        try:
+            optLambd = np.where(cvm == np.min(cvm))[0].item()
+        except ValueError:
+            optLambd = np.where(cvm == np.min(cvm))[0]
+
+        
+        
+        # Get the best lambda
+        best_lam = np.log(lambda_cand[optLambd])
+        out = lambda_cand[optLambd]
+        # get the log of the lambda_cand range / 3
+        rng = np.log((np.max(lambda_cand) - np.min(lambda_cand))/3)
+        
+        # add points to right
+        right = np.logspace(best_lam, best_lam+rng,10)
+        
+        # add points to left - this is 11 because the interval is [x,y)
+        left = np.logspace(best_lam - rng, best_lam,11)
+        
+        # Join these two and only take unique values
+        lambda_cand = np.unique(np.concatenate([left, right]))
+
+    
+
+    return out
 
 
  
@@ -185,7 +154,7 @@ def SSANOVAwt_Gaussian(Gram1,Gram2,y,mscale, order,cat_pos):
     '''
     #n = len(x)
     d = len(mscale)
-    lam = cvlam_Gaussian(Gram1,Gram2,y,mscale,8)
+    lam = cvlam_Gaussian(Gram1,Gram2,y,mscale,6)
     cc = sspline(Gram1, Gram2, y, mscale, lam)
     c_hat = cc['c_hat']
     L2 = np.zeros(d)
@@ -193,7 +162,8 @@ def SSANOVAwt_Gaussian(Gram1,Gram2,y,mscale, order,cat_pos):
     Gram1 = np.swapaxes(Gram1, 2, 1)
     fjj = np.matmul(Gram1, c_hat).T
     #print(fjj.shape)
-    #fjj = fjj[0,:,:]
+    if fjj.ndim==3:
+        fjj = fjj[0,:,:]
     fjj = fjj.round(9)
     lengths = np.array([len(np.unique(fjj[:,j])) for j in range(d)])
 
@@ -349,6 +319,103 @@ def cosso_Gaussian(Gram, y, wt, basis_idx):
                      'Mgrid':Mgrid,
                      'L2norm':L2normMat}
             }
+
+def cosso_Gaussian_(Gram, y, wt, basis_idx):
+    p = len(wt)
+    Gramat1 = Gram[:,basis_idx,:]
+    Gramat2 = Gramat1[basis_idx,:,:]
+    wt = np.array(wt,dtype=float)
+    bestlam = cvlam_Gaussian(Gramat1, Gramat2, y, 1/(wt**2), n_folds = 6)
+    
+    L2normMat = np.array([])
+    # Once again we afford this 20 calculations at first, then add on 20 until we reach 100
+    Mgrid = np.linspace(0,4,10)
+
+    for tempM in Mgrid:
+        tmpSol = twostep_Gaussian(Gramat1, Gramat2, y, wt, bestlam, tempM)
+        temp_theta = tmpSol['theta']
+        temp_coefs = tmpSol['coefs']
+        for j in range(p):
+            temp_L2normMat = np.sqrt(np.mean((temp_theta[j]/wt[j]**2 *\
+                                           np.matmul(Gramat1[:,:,j],temp_coefs))**2))
+            L2normMat = np.append(L2normMat, temp_L2normMat)
+
+    L2normMat = L2normMat.reshape(len(Mgrid),p)
+    L2normMat[0,:]=0
+    return {'tune': {'opt_lam':bestlam,
+                     'Mgrid':Mgrid,
+                     'L2norm':L2normMat}
+            }
+
+
+def tune_cosso_Gaussian_eff(cosso_dict, n_folds=4, maxit=14):
+    n = len(cosso_dict['y'])
+    
+    old_Mgrid = np.array(cosso_dict['tune']['Mgrid'][1:])
+    Mgrid = old_Mgrid.copy()
+    new_Mgrid = np.zeros(2)
+    evals = 0
+    
+    while evals <= maxit:
+        print(Mgrid)
+        kfold = cv_split(n, nfolds = n_folds)
+        cv_raw = np.zeros((n,len(Mgrid)))
+        evals += len(new_Mgrid)
+        iteration = 0
+        for train_index, test_index in kfold:
+            print(iteration+1)
+            iteration+=1
+            trainGramat1 = cosso_dict['Kmat'][train_index,:,:]
+            trainGramat1 = trainGramat1[:,cosso_dict['basis_idx'],:]
+            testGramat1 = cosso_dict['Kmat'][test_index,:,:]
+            testGramat1 = testGramat1[:,cosso_dict['basis_idx'],:]
+            Gramat2 = cosso_dict['Kmat'][cosso_dict['basis_idx'],:,:]
+            Gramat2 = Gramat2[:,cosso_dict['basis_idx'],:]
+            for m in range(len(Mgrid)):
+                tempSol = twostep_Gaussian(trainGramat1, Gramat2,
+                                           cosso_dict['y'][train_index],
+                                           cosso_dict['wt'],
+                                           cosso_dict['tune']['opt_lam'],
+                                           Mgrid[m])
+                ws_temp = wsGram(testGramat1,tempSol['theta']/cosso_dict['wt']**2)
+                tempfpred = tempSol['intercept'] + np.matmul(ws_temp,tempSol['coefs'])
+                cv_raw[test_index,m] = ((cosso_dict['y'][test_index]-tempfpred)**2).reshape(-1,)
+            
+            cvm = np.mean(cv_raw,axis=0)
+            cvsd = np.sqrt(np.mean((cv_raw - cvm)**2, axis=0) / n)
+        try:
+            opt_loc = np.where(cvsd == np.min(cvsd))[0].item()
+        except ValueError:
+            opt_loc = np.where(cvsd == np.min(cvsd))[0]
+        
+        try:
+            rng = (Mgrid[opt_loc] - Mgrid[opt_loc+1]) / 2
+        except IndexError:
+            rng = (Mgrid[opt_loc] - Mgrid[opt_loc-1]) / 2
+                
+        optM = Mgrid[opt_loc]
+        new_Mgrid = np.sort(np.unique(np.concatenate([Mgrid,np.array([optM+rng, optM-rng])])))
+        Mgrid = new_Mgrid.copy()
+        
+
+    return {'OptM':optM,
+            'Mgrid_Final':Mgrid,
+            'cvm':cvm,
+            'cvsd':cvsd
+            }
+    
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def tune_cosso_Gaussian(cosso_dict, n_folds):

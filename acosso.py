@@ -8,8 +8,8 @@ from random import sample
 
 
 class acosso:
-    def __init__(self, X, y, nbasis=None, basis_idx=None, order = 2, wt=None,
-                 gamma=2, cat_pos = None, m_scale0 = None):
+    def __init__(self, X, y, nbasis=None, basis_idx=None, order = 2, gamma=2, 
+                 cat_pos = None, kern_types = None):
         self.X = X.copy()
         self.rescale = False
         self.fix_scale()
@@ -31,7 +31,6 @@ class acosso:
             self.basis_idx = basis_idx
             
         self.gamma = gamma 
-        self.m_scale0 = m_scale0
         
         
         if cat_pos is None:
@@ -40,7 +39,10 @@ class acosso:
             self.cat_pos = cat_pos
             
         self.order = order
-        
+        if isinstance(kern_types, list):
+            self.kern_types = np.array(kern_types)
+        else:
+            self.kern_types = kern_types
 
         if cat_pos is None:
             cat_pos = []
@@ -104,38 +106,6 @@ class acosso:
                 self.rescale = True
                 
     
-    # def get_knots(self):
-    #     '''
-    #     Gets the number of specified knots from the data. If nbasis is not specified,
-    #     the algorithm chooses on its' own, ensuring that a fair number of chosen from each category
-
-    #     Returns
-    #     -------
-    #     DONOTUSE - work in progress.
-
-    #     '''
-    #     levels = np.unique(self.X[:,self.cat_pos],axis=0)
-    #     #levels = [(i,j) for i in self.cat_pos for j in self.X[:,i]]
-    #     n_levels = levels.shape[0]
-        
-    #     basis_idx = np.array([])
-        
-    #     # The numbere of points we need to sample for each cat level
-    #     nbasis_level = self.nbasis // n_levels
-    #     rem = self.nbasis % nbasis_level
-        
-    #     for level in levels:
-    #         pool = np.where(self.X[:,col]==level)
-    #         # Try to pick them. If this fails, the number of basis points is too large
-    #         try:
-    #             basis_idx = np.append(basis_idx,np.sort(sample(pool, nbasis_level)))
-                
-    #         except ValueError:
-    #             print('''nbasis is too high''')
-                
-    #     rem_idx = [i for i in range(self.n) if i not in basis_idx]
-    #     basis_idx = np.append(basis_idx, np.sort(sample(rem_idx, rem)))
-    #     self.basis_idx = basis_idx
     def build(self):
         '''
         Builds the Gram matrices of the system. This can be quite intensive,
@@ -148,7 +118,8 @@ class acosso:
         '''
         
         self.Kmat = bigGram(self.X, self.X, order = self.order,
-                            cat_pos = self.cat_pos)
+                            cat_pos = self.cat_pos, 
+                            kern_types = self.kern_types)
         
         self.P = self.Kmat.shape[2]
         
@@ -156,11 +127,11 @@ class acosso:
         
         self.Gramat2 = self.Gramat1[self.basis_idx,:,:]
         
-        self.wt = self.SSANOVAwt(mscale = self.m_scale0, gamma = self.gamma)
+        self.wt = self.SSANOVAwt(gamma = self.gamma)
         
         
 
-    def SSANOVAwt(self, mscale = None,gamma=2):
+    def SSANOVAwt(self,gamma=2):
         '''
         Function call to calculate adaptive weights wt. 
         MEMORY WARNING: this separately builds the gram matrices
@@ -178,8 +149,7 @@ class acosso:
             The adaptive weights wt.
 
         '''
-        if mscale is None:
-            mscale = np.ones(self.P)
+        mscale = np.ones(self.P)
         inv_l2norm = SSANOVAwt_Gaussian(self.Gramat1,self.Gramat2,
                                         self.y,mscale,order=self.order,
                                         cat_pos = self.cat_pos)
@@ -248,7 +218,8 @@ class acosso:
         BG = bigGram(x_new, 
                      self.obj['X'][self.obj['basis_idx'],:],
                      order = self.order,
-                     cat_pos = self.cat_pos)
+                     cat_pos = self.cat_pos,
+                     kern_types = self.kern_types)
         
         mscale = fit_obj['theta']/(self.obj['wt'])**2
         predictor = fit_obj['intercept'] + np.matmul(wsGram(BG,mscale),fit_obj['coefs'])

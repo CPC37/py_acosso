@@ -4,78 +4,53 @@ from sklearn.model_selection import KFold
 from scipy.spatial import distance_matrix
 
 
+
+def genK(x1,x2,kern_type):
+    if kern_type == 'Gaussian':
+        K = distance_matrix(x1.reshape(len(x1),1),x2.reshape(len(x2),1))
+        K = np.exp(-K**2)
+        
+    elif kern_type == 'RKHS':
+        m = len(x1)
+        n = len(x2)
     
-
-def genK(x1, x2):
-    '''
-    Returns the reproducing kernel
-
-    Parameters
-    ----------
-    x1 : 1D array
-    x2 : other 1D array (same one)
-
-    Returns
-    -------
-    K : Reproducing Kernel
-
-    '''
-    m = len(x1)
-    n = len(x2)
-
-    x1 = x1.reshape(m,1)
-    x2 = x2.reshape(n,1)
-
-    b = abs(np.matmul(x1,np.ones((1,n))) - np.matmul(np.ones((m,1)),x2.T))
+        x1 = x1.reshape(m,1)
+        x2 = x2.reshape(n,1)
     
-    k1s = x1 - 0.5
-    k1t = x2 - 0.5
-    k2s = (k1s**2 - 1/12)/2
-    k2t = (k1t**2 - 1/12)/2
-
-    K = (np.matmul(k1s,k1t.T) + np.matmul(k2s, k2t.T) - ((b-0.5)**4 - (b-0.5)**2 / 2 + 7/240)/24)
-
-    return K
-
-#def genK_cat(x1,x2):
-#    L = np.triu(np.ones(len(x1)))
+        b = abs(np.matmul(x1,np.ones((1,n))) - np.matmul(np.ones((m,1)),x2.T))
+        
+        k1s = x1 - 0.5
+        k1t = x2 - 0.5
+        k2s = (k1s**2 - 1/12)/2
+        k2t = (k1t**2 - 1/12)/2
     
-
-def genK_cat(x1, x2):
-    '''
-    Returns the reproducing kernel such that the solution belongs to the RKHS (categorical variables)
-
-    Parameters
-    ----------
-    x1 : 1D array
-    x2 : other 1D array (sometimes the same one)
-
-
-    Returns
-    -------
-    K : Reproducing Kernel
+        K = (np.matmul(k1s,k1t.T) + np.matmul(k2s, k2t.T) - ((b-0.5)**4 - (b-0.5)**2 / 2 + 7/240)/24)
+        
+    elif kern_type == 'Cate':
+        n1 = len(x1)
+        n2 = len(x2)
     
-    '''
-    n1 = len(x1)
-    n2 = len(x2)
-    
-    # We need to reshape these to ensure they are n x 1 arrays (seriously, to hell with numpy)
-    x1 = x1.reshape(n1,1)
-    x2 = x2.reshape(n2,1)
+        # We need to reshape these to ensure they are n x 1 arrays (seriously, to hell with numpy)
+        x1 = x1.reshape(n1,1)
+        x2 = x2.reshape(n2,1)
      
-    t1 = np.tile(x1, [n2,1])
-    t2 = np.repeat(x2, n1)
-    # Having to reshape for the same reason as above
-    t2 = t2.reshape(len(t2),1)
+        t1 = np.tile(x1, [n2,1])
+        t2 = np.repeat(x2, n1)
+        # Having to reshape for the same reason as above
+        t2 = t2.reshape(len(t2),1)
     
-    L = len(np.unique(np.concatenate([t1, t2])))
-    K = (L*(t1==t2) - 1).reshape((n1,n2),order='F')
+        L = len(np.unique(np.concatenate([t1, t2])))
+        K = (L*(t1==t2) - 1).reshape((n1,n2),order='F')
     
-    K = K/L
-    
+        K = K/L
+        
     return K
 
-def bigGram(x1, x2, order, cat_pos=0):
+
+
+
+
+def bigGram(x1, x2, order, cat_pos=0, kern_types = None):
     '''Creates a Gram matrix of the entire space of x1 and x2. Usually this function is used with x1==x2
     The output of this function is a 3D matrix containing the kernel of each column
 
@@ -100,17 +75,20 @@ def bigGram(x1, x2, order, cat_pos=0):
     n1 = x1.shape[0]
     n2 = x2.shape[0]
     d = x1.shape[1]
+    
+    if kern_types is None:
+        kern_types = np.array(['RKHS']*d)
+    
     Gram = np.zeros((n1,n2,d))
         
     if type(cat_pos) != list:
         cat_pos = [cat_pos]
-        
-    for j in range(d):
-        if j not in cat_pos:
-            Gram[:,:,j] = genK(x1[:,j],x2[:,j])
-        else:
-            Gram[:,:,j] = genK_cat(x1[:,j],x2[:,j])
     
+    kern_types[cat_pos] = '''Cate'''
+    
+    for j in range(d):
+        Gram[:,:,j] = genK(x1[:,j],x2[:,j], kern_types[j])
+        
     
     if order == 2:
         combs = int(d*(d-1)/2)
